@@ -1,10 +1,12 @@
+import os
+os.environ["HF_HOME"] = "/egr/research-dselab/renjie3/.cache"
+
 from PIL import Image
 from matplotlib import pyplot as plt
 import textwrap
 import argparse
 import torch
 import copy
-import os
 import re
 import numpy as np
 from diffusers import AutoencoderKL, UNet2DConditionModel
@@ -22,7 +24,7 @@ def train(erase_concept, erase_from, train_method, iterations, negative_guidance
   
     nsteps = 50
 
-    diffuser = StableDiffuser(scheduler='DDIM').to(device)
+    diffuser = StableDiffuser3().to(device)
     diffuser.train()
 
     finetuner = FineTunedModel(diffuser, train_method=train_method)
@@ -50,11 +52,7 @@ def train(erase_concept, erase_from, train_method, iterations, negative_guidance
     for e, f in zip(erase_concept, erase_from):
         erase_concept_.append([e,f])
     
-    
-    
     erase_concept = erase_concept_
-    
-    
     
     print(erase_concept)
 
@@ -65,11 +63,9 @@ def train(erase_concept, erase_from, train_method, iterations, negative_guidance
             index = np.random.choice(len(erase_concept), 1, replace=False)[0]
             erase_concept_sampled = erase_concept[index]
             
-            
-            neutral_text_embeddings = diffuser.get_text_embeddings([''],n_imgs=1)
-            positive_text_embeddings = diffuser.get_text_embeddings([erase_concept_sampled[0]],n_imgs=1)
-            target_text_embeddings = diffuser.get_text_embeddings([erase_concept_sampled[1]],n_imgs=1)
-        
+            neutral_text_embeddings, neutral_pooled_text_embeddings = diffuser.get_text_embeddings([''],n_imgs=1)
+            positive_text_embeddings, positive_pooled_text_embeddings = diffuser.get_text_embeddings([erase_concept_sampled[0]],n_imgs=1)
+            target_text_embeddings, target_pooled_text_embeddings = diffuser.get_text_embeddings([erase_concept_sampled[1]],n_imgs=1)
 
             diffuser.set_scheduler_timesteps(nsteps)
 
@@ -77,13 +73,14 @@ def train(erase_concept, erase_from, train_method, iterations, negative_guidance
 
             iteration = torch.randint(1, nsteps - 1, (1,)).item()
 
-            latents = diffuser.get_initial_latents(1, 512, 1)
+            latents = diffuser.get_initial_latents(1, 1024, 1)
 
             with finetuner:
 
                 latents_steps, _ = diffuser.diffusion(
                     latents,
                     positive_text_embeddings,
+                    positive_pooled_text_embeddings,
                     start_iteration=0,
                     end_iteration=iteration,
                     guidance_scale=3, 
@@ -94,17 +91,16 @@ def train(erase_concept, erase_from, train_method, iterations, negative_guidance
 
             iteration = int(iteration / nsteps * 1000)
             
-            positive_latents = diffuser.predict_noise(iteration, latents_steps[0], positive_text_embeddings, guidance_scale=1)
-            neutral_latents = diffuser.predict_noise(iteration, latents_steps[0], neutral_text_embeddings, guidance_scale=1)
-            target_latents = diffuser.predict_noise(iteration, latents_steps[0], target_text_embeddings, guidance_scale=1)
+            positive_latents = diffuser.predict_noise(iteration, latents_steps[0], positive_text_embeddings, positive_pooled_text_embeddings, guidance_scale=1)
+            neutral_latents = diffuser.predict_noise(iteration, latents_steps[0], neutral_text_embeddings, neutral_pooled_text_embeddings, guidance_scale=1)
+            target_latents = diffuser.predict_noise(iteration, latents_steps[0], target_text_embeddings, target_pooled_text_embeddings, guidance_scale=1)
             if erase_concept_sampled[0] == erase_concept_sampled[1]:
                 target_latents = neutral_latents.clone().detach()
         with finetuner:
-            negative_latents = diffuser.predict_noise(iteration, latents_steps[0], target_text_embeddings, guidance_scale=1)
+            negative_latents = diffuser.predict_noise(iteration, latents_steps[0], target_text_embeddings, target_pooled_text_embeddings, guidance_scale=1)
 
         positive_latents.requires_grad = False
         neutral_latents.requires_grad = False
-        
 
         loss = criteria(negative_latents, target_latents - (negative_guidance*(positive_latents - neutral_latents))) 
         

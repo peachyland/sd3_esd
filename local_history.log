@@ -1,0 +1,1 @@
+python esd_diffusers.py --erase_concept 'Van Gogh' --train_method 'xattn'
